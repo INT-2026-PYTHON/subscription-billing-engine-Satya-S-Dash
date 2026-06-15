@@ -23,7 +23,7 @@ from billing_engine.models import (
 from billing_engine.money import Money
 from billing_engine.payments.gateway import ScriptedGateway, PaymentResult
 
-from tests.conftest import (
+from billing_engine_starter.tests.conftest import (
     make_flat_strategy_factory, make_discount_factory, make_no_tax_factory,
 )
 
