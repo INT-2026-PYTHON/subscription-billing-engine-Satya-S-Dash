@@ -53,4 +53,13 @@ class Database:
             conn.rollback()
             raise
         finally:
-            conn.close()
+            pass
+    def close(self):
+        if self.conn:
+            self.conn.close()
+            self.conn = None
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass               

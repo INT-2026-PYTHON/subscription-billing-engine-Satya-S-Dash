@@ -37,6 +37,92 @@ def build_invoice(
     period_end: date,
     invoice_count_so_far: int,
 ) -> Invoice:
-    """Pure function. Returns an Invoice (id=None, status=DRAFT) ready to be persisted."""
-    # TODO Day 2
-    raise NotImplementedError("Day 2: implement build_invoice")
+
+    # 1. base
+    base = strategy.calculate(usage_quantity)
+
+    # 2. discount
+    if discount:
+        discount_context = DiscountContext(invoice_count_so_far)
+        discount_amount = discount.apply(base, discount_context)
+    else:
+        discount_amount = Money("0", base.currency)
+
+    # 3. taxable
+    taxable = base - discount_amount
+
+    # 4. tax
+    tax_result = tax_calc.apply(taxable, tax_context)
+
+    # 5. total
+    total = taxable + tax_result.total
+
+    line_items: list[InvoiceLineItem] = []
+
+    # BASE always
+    line_items.append(
+        InvoiceLineItem(
+            id=None,
+            invoice_id=None,
+            description="Base charge",
+            amount=base,
+            kind=LineItemKind.BASE,
+        )
+    )
+
+    # DISCOUNT only if > 0
+    if discount and discount_amount.amount != "0":
+        line_items.append(
+            InvoiceLineItem(
+                id=None,
+                invoice_id=None,
+                description="Discount",
+                amount=discount_amount,
+                kind=LineItemKind.DISCOUNT,
+            )
+        )
+
+    # TAX only if applicable
+    # 4. TAX line items (always evaluate tax)
+    tax_components = getattr(tax_result, "components", None)
+
+    if tax_components:
+    # Multi-component tax (e.g., GST: CGST + SGST)
+        for i, t in enumerate(tax_components):
+            if t != Money("0", base.currency):
+                line_items.append(
+                InvoiceLineItem(
+                    id=None,
+                    invoice_id=None,
+                    description=f"Tax {i + 1}",
+                    amount=t,
+                    kind=LineItemKind.TAX,
+                )
+            )
+    else:
+    # Single tax (e.g., VAT)
+        if tax_result.total != Money("0", base.currency):
+            line_items.append(
+            InvoiceLineItem(
+                id=None,
+                invoice_id=None,
+                description="Tax",
+                amount=tax_result.total,
+                kind=LineItemKind.TAX,
+            )
+        )
+
+    return Invoice(
+        id=None,
+        subscription_id=subscription.id,
+        period_start=period_start,
+        period_end=period_end,
+        subtotal=base,
+        discount_total=discount_amount,
+        tax_total=tax_result.total,
+        total=total,
+        status=InvoiceStatus.DRAFT,
+        issued_at=None,
+        pdf_path=None,
+        line_items=line_items,
+    )
