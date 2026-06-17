@@ -19,7 +19,6 @@ from billing_engine.db import queries as q
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
-
 from billing_engine.db.database import Database
 from billing_engine.money import Money
 from billing_engine.models import (
@@ -481,39 +480,33 @@ class SubscriptionRepository:
         for row in rows
         ]
 
-    def update_period(self,subscription_id: int,new_start: date,new_end: date,) -> None:
+    def update_period(self, subscription_id: int, new_start: date, new_end: date) -> None:
         with self.db.transaction() as conn:
             conn.execute(
-            """
-            UPDATE subscriptions
-            SET
-                current_period_start = ?,
-                current_period_end = ?
-            WHERE id = ?
-            """,
-            (
-                new_start.isoformat(),
-                new_end.isoformat(),
-                subscription_id,
-            ),
+                """
+                UPDATE subscriptions
+                SET current_period_start = ?, current_period_end = ?
+                WHERE id = ?
+                """,
+                (new_start.isoformat(), new_end.isoformat(), subscription_id),
             )
 
-    def update_status(self,subscription_id: int,new_status: SubscriptionStatus,past_due_since: Optional[date] = None,) -> None:
+
+    def update_status(self, subscription_id: int, status: str, past_due_since: datetime | None = None) -> None:
         with self.db.transaction() as conn:
             conn.execute(
-            """
-            UPDATE subscriptions
-            SET
-                status = ?,
-                past_due_since = ?
-            WHERE id = ?
-            """,
-            (
-                new_status.value,
-                past_due_since.isoformat() if past_due_since else None,
-                subscription_id,
-            ),
+                """
+                UPDATE subscriptions
+                SET status = ?, past_due_since = ?
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    past_due_since.isoformat() if past_due_since else None,
+                    subscription_id,
+                ),
             )
+
     def update_plan(self, subscription_id: int, new_plan_id: int) -> None:
         """Switch the subscription to a different plan (used by upgrade flow)."""
         # TODO Day 4.
@@ -667,18 +660,16 @@ class InvoiceRepository:
             line_items=[],
             )
     def count_for_subscription(self, subscription_id: int) -> int:
-        """Used by FirstMonthFree discount."""
-        with self.db.transaction() as conn:
-            row = conn.execute(
+        cur = self.db.conn.execute(
             """
             SELECT COUNT(*)
             FROM invoices
             WHERE subscription_id = ?
             """,
             (subscription_id,),
-            ).fetchone()
+        )
+        return int(cur.fetchone()[0])
 
-        return int(row[0])
     def mark_paid(self, invoice_id: int) -> None:
         with self.db.transaction() as conn:
             conn.execute(
@@ -794,78 +785,51 @@ class LedgerRepository:
     def __init__(self, db: Database) -> None:
         self.db = db
 
-    def add(self, entry: LedgerEntry) -> LedgerEntry:
+    def add(self,customer_id: int,invoice_id: int,amount: str,entry_type: str,description: str | None = None,) -> int:
         with self.db.transaction() as conn:
             cur = conn.execute(
-            """
-            INSERT INTO ledger_entries (
-                invoice_id,
-                customer_id,
-                amount,
-                currency,
-                direction,
-                reason
+                """
+                INSERT INTO ledger_entries
+                (customer_id, invoice_id, amount, entry_type, description, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    customer_id,
+                    invoice_id,
+                    amount,
+                    entry_type,
+                    description,
+                    datetime.utcnow().isoformat(),
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                entry.invoice_id,
-                entry.customer_id,
-                entry.amount.to_storage(),
-                entry.amount.currency,
-                entry.direction.value,
-                entry.reason,
-            ),
-        )
+        return int(cur.lastrowid)
 
-        new_id = cur.lastrowid
-
-        return LedgerEntry(
-        id=new_id,
-        invoice_id=entry.invoice_id,
-        customer_id=entry.customer_id,
-        amount=entry.amount,
-        direction=entry.direction,
-        reason=entry.reason,
-        created_at=entry.created_at,
-    )
 
     def list_for_customer(self, customer_id: int) -> list[LedgerEntry]:
-        with self.db.transaction() as conn:
-            rows = conn.execute(
+        cur = self.db.conn.execute(
             """
-            SELECT
-                id,
-                invoice_id,
-                customer_id,
-                amount,
-                currency,
-                direction,
-                reason,
-                created_at
+            SELECT id, customer_id, invoice_id, amount, entry_type, description, created_at
             FROM ledger_entries
             WHERE customer_id = ?
-            ORDER BY id
+            ORDER BY created_at, id
             """,
             (customer_id,),
-            ).fetchall()
-
-        entries = []
-
-        for row in rows:
-            entries.append(
-            LedgerEntry(
-                id=row[0],
-                invoice_id=row[1],
-                customer_id=row[2],
-                amount=Money(row[3], row[4]),
-                direction=LedgerDirection(row[5]),
-                reason=row[6],
-                created_at=datetime.fromisoformat(row[7]) if row[7] else None,
-            )
         )
 
-        return entries
+        rows = cur.fetchall()
+
+        return [
+            LedgerEntry(
+                id=row[0],
+                customer_id=row[1],
+                invoice_id=row[2],
+                amount=row[3],
+                entry_type=row[4],
+                description=row[5],
+                created_at=row[6],
+            )
+            for row in rows
+        ]
     
     # ✅ These two methods are intentionally implemented to REJECT — do not override.
     def update(self, *args, **kwargs):
@@ -882,21 +846,71 @@ class PaymentAttemptRepository:
     def __init__(self, db: Database) -> None:
         self.db = db
 
-    def add(
-        self,
-        invoice_id: int,
-        attempt_no: int,
-        status: str,
-        failure_reason: Optional[str],
-        next_retry_at: Optional[datetime],
-    ) -> int:
-        # TODO Day 3.
-        raise NotImplementedError("Day 3: implement PaymentAttemptRepository.add")
+    def add(self,invoice_id: int,attempt_no: int,status: str,failure_reason: Optional[str],next_retry_at: Optional[datetime],) -> int:
+        with self.db.transaction() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO payment_attempts (
+                    invoice_id,
+                    attempt_no,
+                    status,
+                    failure_reason,
+                    next_retry_at,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    invoice_id,
+                    attempt_no,
+                    status,
+                    failure_reason,
+                    next_retry_at.isoformat() if next_retry_at else None,
+                    datetime.utcnow().isoformat(),
+                ),
+            )
+            return int(cur.lastrowid)
 
     def list_for_invoice(self, invoice_id: int) -> list[dict]:
-        # TODO Day 3.
-        raise NotImplementedError("Day 3: implement PaymentAttemptRepository.list_for_invoice")
+        cur = self.db.conn.execute(
+            """
+            SELECT
+                id,
+                invoice_id,
+                attempt_no,
+                status,
+                failure_reason,
+                next_retry_at,
+                created_at
+            FROM payment_attempts
+            WHERE invoice_id = ?
+            ORDER BY attempt_no ASC
+            """,
+            (invoice_id,),
+        )
+
+        rows = cur.fetchall()
+
+        return [
+            {
+                "id": r[0],
+                "invoice_id": r[1],
+                "attempt_no": r[2],
+                "status": r[3],
+                "failure_reason": r[4],
+                "next_retry_at": r[5],
+                "created_at": r[6],
+            }
+            for r in rows
+        ]
 
     def count_for_invoice(self, invoice_id: int) -> int:
-        # TODO Day 3.
-        raise NotImplementedError("Day 3: implement PaymentAttemptRepository.count_for_invoice")
+        cur = self.db.conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM payment_attempts
+            WHERE invoice_id = ?
+            """,
+            (invoice_id,),
+        )
+        return int(cur.fetchone()[0])
