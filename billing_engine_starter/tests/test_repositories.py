@@ -261,6 +261,13 @@ class TestInvoiceRepository:
         with pytest.raises(sqlite3.IntegrityError):
             repo.add(self._make_invoice(sid))
 
+    def test_count_for_subscription(self, db):
+        sid = self._setup(db)
+        repo = InvoiceRepository(db)
+        assert repo.count_for_subscription(sid) == 0
+        repo.add(self._make_invoice(sid))
+        assert repo.count_for_subscription(sid) == 1
+        
     def test_mark_paid(self, db):
         sid = self._setup(db)
         repo = InvoiceRepository(db)
