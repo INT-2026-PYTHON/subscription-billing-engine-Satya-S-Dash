@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+import random
 from typing import Optional
 
 from billing_engine.models import Invoice
@@ -41,17 +42,15 @@ class ScriptedGateway(PaymentGateway):
     """
 
     def __init__(self, results: list[PaymentResult]) -> None:
-        self.results = results
-        self.index = 0
+        self._results = list(results)
+        self._index = 0
 
     def charge(self, invoice: Invoice) -> PaymentResult:
-        if self.index < len(self.results):
-            result = self.results[self.index]
-            self.index += 1
-            return result
-
-        # If exhausted, default safe failure
-        return PaymentResult(False, "NO_MORE_SCRIPTED_RESULTS")
+        if self._index >= len(self._results):
+            raise RuntimeError("ScriptedGateway has no more pre-seeded results")
+        result = self._results[self._index]
+        self._index += 1
+        return result
 
 
 # ----------------------------------------------------------------
@@ -61,11 +60,12 @@ class FakeRandomGateway(PaymentGateway):
     """Succeeds at a configurable rate; seeded for reproducibility."""
 
     def __init__(self, success_rate: float = 0.7, seed: Optional[int] = None) -> None:
+        if success_rate < 0.0 or success_rate > 1.0:
+            raise ValueError("success_rate must be between 0 and 1")
         self.success_rate = success_rate
-        self.random = random.Random(seed)
+        self._rng = random.Random(seed)
 
     def charge(self, invoice: Invoice) -> PaymentResult:
-        if self.random.random() < self.success_rate:
-            return PaymentResult(True)
-
-        return PaymentResult(False, "RANDOM_FAILURE")
+        if self._rng.random() < self.success_rate:
+            return PaymentResult(success=True)
+        return PaymentResult(success=False, failure_reason="PROCESSOR_DECLINED")

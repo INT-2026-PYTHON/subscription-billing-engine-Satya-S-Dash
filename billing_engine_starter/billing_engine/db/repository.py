@@ -8,10 +8,32 @@ take/return domain dataclasses (defined in billing_engine/models/).
    The signatures, docstrings, and the LedgerRepository's append-only
    guarantee are already in place — do not change them.
 
+Beginner map (Day 2):
+  1) CustomerRepository: add, get, find_by_email, list_all
+  2) PlanRepository: add, get, list_all
+  3) PlanTierRepository: add, list_for_plan
+  4) DiscountRepository: add, get_by_code
+  5) SubscriptionRepository: add, get, list_all, get_due_for_billing
+  6) UsageRecordRepository: add, sum_for_period
+  7) InvoiceRepository: add, get
+  8) InvoiceLineItemRepository: add, list_for_invoice
+
+Skip on Day 2 (read-only for now):
+  - SubscriptionRepository.update_period / update_status / update_plan
+  - InvoiceRepository.count_for_subscription / mark_paid / mark_failed / set_pdf_path
+  - LedgerRepository and PaymentAttemptRepository
+
 Conventions:
   - Always use parameterized queries (`?` placeholders) — NEVER f-string SQL.
   - Money values are persisted as TEXT using `money.to_storage()`.
   - Dates are persisted as ISO strings (`date.isoformat()`).
+
+New layering (beginner-friendly):
+  - Raw SQL lives in `billing_engine/db/queries.py`.
+  - Repository methods call those query helpers.
+  - Your Day 2 focus is:
+      1) Convert domain -> storage values before helper call
+      2) Convert rows -> domain dataclasses after helper call
 """
 
 from __future__ import annotations
@@ -105,8 +127,15 @@ def _line_item_from_row(row, currency: str) -> InvoiceLineItem:
 # ============================================================
 # CUSTOMERS
 # ============================================================
+# Day 2: start here.
 class CustomerRepository:
-    """Persistence boundary for customers."""
+    """Persistence boundary for customers.
+
+    A Customer is the billing account owner: invoices, subscriptions, and
+    ledger entries ultimately belong to a customer. This repository hides the
+    `customers` table and returns Customer dataclasses so the rest of the app
+    does not need to know SQL column names.
+    """
 
     def __init__(self, db: Database) -> None:
         self.db = db
@@ -143,10 +172,20 @@ class CustomerRepository:
         with self.db.connect() as conn:
             rows = q.select_all_customers(conn)
         return [_customer_from_row(row) for row in rows]
+
+
 # ============================================================
 # PLANS  +  PLAN TIERS
 # ============================================================
+# Day 2
 class PlanRepository:
+    """Persistence boundary for subscription plans.
+
+    A Plan describes what the customer bought: pricing type, billing period,
+    currency, and strategy configuration. Pricing code consumes Plan objects,
+    while this repository handles the `plans` table representation.
+    """
+
     def __init__(self, db: Database) -> None:
         self.db = db
 
@@ -181,13 +220,20 @@ class PlanRepository:
 
 
 class PlanTierRepository:
+    """Persistence boundary for pricing tiers attached to a plan.
+
+    Tiered and usage-based plans need rows such as "0-100 units at 1.00" and
+    "101+ units at 0.75". These rows live separately from plans because one
+    plan can have many tiers.
+    """
+
     def __init__(self, db: Database) -> None:
         self.db = db
 
     def add(self, plan_id: int, from_units: int, to_units: Optional[int], unit_price: Money) -> int:
         with self.db.transaction() as conn:
             return q.insert_plan_tier(conn, plan_id, from_units, to_units, unit_price.to_storage())
-        
+
     def list_for_plan(self, plan_id: int, currency: str) -> list[tuple[int, Optional[int], Money]]:
         with self.db.connect() as conn:
             rows = q.select_plan_tiers(conn, plan_id)
@@ -200,14 +246,22 @@ class PlanTierRepository:
 # ============================================================
 # DISCOUNTS
 # ============================================================
+# Day 2
 class DiscountRepository:
+    """Persistence boundary for discount definitions.
+
+    Discounts are stored as flexible rows because different discount types need
+    different interpretation: percentage, fixed amount, or first-month-free.
+    This repository intentionally returns dictionaries instead of a dataclass.
+    """
+
     def __init__(self, db: Database) -> None:
         self.db = db
 
     def add(self, code: str, discount_type: str, value: str, currency: Optional[str] = None) -> int:
         with self.db.transaction() as conn:
             return q.insert_discount(conn, code, discount_type, value, currency)
-    
+
     def get_by_code(self, code: str) -> Optional[dict]:
         with self.db.connect() as conn:
             row = q.select_discount_by_code(conn, code)
@@ -217,7 +271,15 @@ class DiscountRepository:
 # ============================================================
 # SUBSCRIPTIONS
 # ============================================================
+# Day 2 (only add/get/list_all/get_due_for_billing)
 class SubscriptionRepository:
+    """Persistence boundary for customer subscriptions.
+
+    A Subscription connects a customer to a plan and tracks lifecycle state:
+    TRIAL, ACTIVE, PAST_DUE, or CANCELLED. It also stores the current billing
+    period, trial end date, optional discount, and dunning state.
+    """
+
     def __init__(self, db: Database) -> None:
         self.db = db
 
@@ -245,61 +307,68 @@ class SubscriptionRepository:
             discount_id=subscription.discount_id,
             past_due_since=subscription.past_due_since,
         )
-    
+
     def get(self, subscription_id: int) -> Optional[Subscription]:
         with self.db.connect() as conn:
             row = q.select_subscription_by_id(conn, subscription_id)
         return _subscription_from_row(row) if row else None
 
-
     def list_all(self) -> list[Subscription]:
         with self.db.connect() as conn:
             rows = q.select_all_subscriptions(conn)
         return [_subscription_from_row(row) for row in rows]
-    
+
     def get_due_for_billing(self, as_of: date) -> list[Subscription]:
         with self.db.connect() as conn:
             rows = q.select_due_subscriptions(conn, as_of.isoformat())
         return [_subscription_from_row(row) for row in rows]
 
-
+    # ------------------------------------------------------------------
+    # Day 2 boundary:
+    # Everything below this line in this class is intentionally deferred.
+    # Keep the method stubs so Day 3/4 can build on the same API surface.
+    # ------------------------------------------------------------------
     def update_period(self, subscription_id: int, new_start: date, new_end: date) -> None:
         with self.db.transaction() as conn:
-            conn.execute(
-                """
-                UPDATE subscriptions
-                SET current_period_start = ?, current_period_end = ?
-                WHERE id = ?
-                """,
-                (new_start.isoformat(), new_end.isoformat(), subscription_id),
+            q.update_subscription_period(
+                conn,
+                subscription_id,
+                new_start.isoformat(),
+                new_end.isoformat(),
             )
 
-
-    def update_status(self, subscription_id: int, status: str, past_due_since: datetime | None = None) -> None:
+    def update_status(
+        self,
+        subscription_id: int,
+        new_status: SubscriptionStatus,
+        past_due_since: Optional[date] = None,
+    ) -> None:
         with self.db.transaction() as conn:
-            conn.execute(
-                """
-                UPDATE subscriptions
-                SET status = ?, past_due_since = ?
-                WHERE id = ?
-                """,
-                (
-                    status,
-                    past_due_since.isoformat() if past_due_since else None,
-                    subscription_id,
-                ),
+            q.update_subscription_status(
+                conn,
+                subscription_id,
+                new_status.value,
+                past_due_since.isoformat() if past_due_since else None,
             )
 
     def update_plan(self, subscription_id: int, new_plan_id: int) -> None:
-        """Switch the subscription to a different plan (used by upgrade flow)."""
         # TODO Day 4.
+        # Hint: q.update_subscription_plan(...)
         raise NotImplementedError("Day 4: implement SubscriptionRepository.update_plan")
 
 
 # ============================================================
 # USAGE
 # ============================================================
+# Day 2
 class UsageRecordRepository:
+    """Persistence boundary for metered usage.
+
+    Usage records store quantities such as API calls, seats, messages, or GBs.
+    Usage-based pricing strategies ask this repository for the total quantity
+    they should charge for a subscription.
+    """
+
     def __init__(self, db: Database) -> None:
         self.db = db
 
@@ -307,15 +376,25 @@ class UsageRecordRepository:
         with self.db.transaction() as conn:
             return q.insert_usage_record(conn, subscription_id, metric, quantity)
 
-
-    def sum_for_period(self, subscription_id, metric, start, end):
+    def sum_for_period(
+        self, subscription_id: int, metric: str, period_start: date, period_end: date
+    ) -> int:
         with self.db.connect() as conn:
             return q.sum_usage_for_subscription_metric(conn, subscription_id, metric)
-    
+
+
 # ============================================================
 # INVOICES + LINE ITEMS
 # ============================================================
+# Day 2 (InvoiceRepository only add/get)
 class InvoiceRepository:
+    """Persistence boundary for invoice headers.
+
+    An Invoice stores the totals for one subscription period: subtotal,
+    discounts, tax, final total, status, issue time, and optional PDF path.
+    Line items are stored separately by InvoiceLineItemRepository.
+    """
+
     def __init__(self, db: Database) -> None:
         self.db = db
 
@@ -354,51 +433,35 @@ class InvoiceRepository:
         with self.db.connect() as conn:
             row = q.select_invoice_by_id(conn, invoice_id)
         return _invoice_from_row(row) if row else None
-    
+
     def count_for_subscription(self, subscription_id: int) -> int:
-        cur = self.db.conn.execute(
-            """
-            SELECT COUNT(*)
-            FROM invoices
-            WHERE subscription_id = ?
-            """,
-            (subscription_id,),
-        )
-        return int(cur.fetchone()[0])
+        with self.db.connect() as conn:
+            return q.count_invoices_for_subscription(conn, subscription_id)
 
     def mark_paid(self, invoice_id: int) -> None:
-        with self.db.transaction() as conn:
-            conn.execute(
-            """
-            UPDATE invoices
-            SET status = ?
-            WHERE id = ?
-            """,
-            (
-                InvoiceStatus.PAID.value,
-                invoice_id,
-            ),
-        )
+        # TODO Day 4.
+        # Hint: q.update_invoice_status(..., "PAID")
+        raise NotImplementedError("Day 4: implement InvoiceRepository.mark_paid")
 
     def mark_failed(self, invoice_id: int) -> None:
-        with self.db.transaction() as conn:
-            conn.execute(
-            """
-            UPDATE invoices
-            SET status = ?
-            WHERE id = ?
-            """,
-            (
-                InvoiceStatus.FAILED.value,
-                invoice_id,
-            ),
-        )
+        # TODO Day 4.
+        # Hint: q.update_invoice_status(..., "FAILED")
+        raise NotImplementedError("Day 4: implement InvoiceRepository.mark_failed")
+
     def set_pdf_path(self, invoice_id: int, path: str) -> None:
         # TODO Day 4.
+        # Hint: q.update_invoice_pdf_path(...)
         raise NotImplementedError("Day 4: implement InvoiceRepository.set_pdf_path")
 
 
 class InvoiceLineItemRepository:
+    """Persistence boundary for invoice detail rows.
+
+    Line items explain how the invoice total was built: base charge, usage,
+    discount, tax, or proration. They are separate from the invoice header so
+    one invoice can contain multiple visible charges and credits.
+    """
+
     def __init__(self, db: Database) -> None:
         self.db = db
 
@@ -420,6 +483,7 @@ class InvoiceLineItemRepository:
             amount=line_item.amount,
             kind=line_item.kind,
         )
+
     def list_for_invoice(self, invoice_id: int) -> list[InvoiceLineItem]:
         with self.db.connect() as conn:
             invoice = q.select_invoice_by_id(conn, invoice_id)
@@ -430,59 +494,61 @@ class InvoiceLineItemRepository:
 
 
 # ============================================================
+# DAY 3/4 ONLY — keep stubs for later
+# ============================================================
+
+# ============================================================
 # LEDGER — APPEND-ONLY (do not implement update/delete)
 # ============================================================
 class LedgerRepository:
+    """Persistence boundary for the append-only accounting ledger.
+
+    The ledger records financial movements: DEBIT when the customer owes money,
+    CREDIT when money is received or reversed. It is append-only so history is
+    auditable; mistakes should be corrected with reversing entries, not edits.
+    """
+
     def __init__(self, db: Database) -> None:
         self.db = db
 
-    def add(self,customer_id: int,invoice_id: int,amount: str,entry_type: str,description: str | None = None,) -> int:
+    def add(self, entry: LedgerEntry) -> LedgerEntry:
         with self.db.transaction() as conn:
-            cur = conn.execute(
-                """
-                INSERT INTO ledger_entries
-                (customer_id, invoice_id, amount, entry_type, description, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    customer_id,
-                    invoice_id,
-                    amount,
-                    entry_type,
-                    description,
-                    datetime.utcnow().isoformat(),
-                ),
+            new_id = q.insert_ledger_entry(
+                conn,
+                entry.invoice_id,
+                entry.customer_id,
+                entry.amount.to_storage(),
+                entry.amount.currency,
+                entry.direction.value,
+                entry.reason,
             )
-        return int(cur.lastrowid)
-
-
-    def list_for_customer(self, customer_id: int) -> list[LedgerEntry]:
-        cur = self.db.conn.execute(
-            """
-            SELECT id, customer_id, invoice_id, amount, entry_type, description, created_at
-            FROM ledger_entries
-            WHERE customer_id = ?
-            ORDER BY created_at, id
-            """,
-            (customer_id,),
+        return LedgerEntry(
+            id=new_id,
+            invoice_id=entry.invoice_id,
+            customer_id=entry.customer_id,
+            amount=entry.amount,
+            direction=entry.direction,
+            reason=entry.reason,
+            created_at=entry.created_at,
         )
 
-        rows = cur.fetchall()
-
+    def list_for_customer(self, customer_id: int) -> list[LedgerEntry]:
+        with self.db.connect() as conn:
+            rows = q.select_ledger_for_customer(conn, customer_id)
         return [
             LedgerEntry(
-                id=row[0],
-                customer_id=row[1],
-                invoice_id=row[2],
-                amount=row[3],
-                entry_type=row[4],
-                description=row[5],
-                created_at=row[6],
+                id=row["id"],
+                invoice_id=row["invoice_id"],
+                customer_id=row["customer_id"],
+                amount=Money(row["amount"], row["currency"]),
+                direction=LedgerDirection(row["direction"]),
+                reason=row["reason"],
+                created_at=_parse_datetime(row["created_at"]),
             )
             for row in rows
         ]
-    
-    # ✅ These two methods are intentionally implemented to REJECT — do not override.
+
+    # These two methods are intentionally implemented to REJECT — do not override.
     def update(self, *args, **kwargs):
         raise NotImplementedError("Ledger is append-only. Post a reversing entry instead.")
 
@@ -494,74 +560,39 @@ class LedgerRepository:
 # PAYMENT ATTEMPTS
 # ============================================================
 class PaymentAttemptRepository:
+    """Persistence boundary for payment retry history.
+
+    Each payment attempt records whether charging an invoice succeeded or
+    failed, why it failed, and when the next retry should happen. This history
+    powers the Day 3/4 dunning flow.
+    """
+
     def __init__(self, db: Database) -> None:
         self.db = db
 
-    def add(self,invoice_id: int,attempt_no: int,status: str,failure_reason: Optional[str],next_retry_at: Optional[datetime],) -> int:
+    def add(
+        self,
+        invoice_id: int,
+        attempt_no: int,
+        status: str,
+        failure_reason: Optional[str],
+        next_retry_at: Optional[datetime],
+    ) -> int:
         with self.db.transaction() as conn:
-            cur = conn.execute(
-                """
-                INSERT INTO payment_attempts (
-                    invoice_id,
-                    attempt_no,
-                    status,
-                    failure_reason,
-                    next_retry_at,
-                    created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    invoice_id,
-                    attempt_no,
-                    status,
-                    failure_reason,
-                    next_retry_at.isoformat() if next_retry_at else None,
-                    datetime.utcnow().isoformat(),
-                ),
-            )
-            return int(cur.lastrowid)
-
-    def list_for_invoice(self, invoice_id: int) -> list[dict]:
-        cur = self.db.conn.execute(
-            """
-            SELECT
-                id,
+            return q.insert_payment_attempt(
+                conn,
                 invoice_id,
                 attempt_no,
                 status,
                 failure_reason,
-                next_retry_at,
-                created_at
-            FROM payment_attempts
-            WHERE invoice_id = ?
-            ORDER BY attempt_no ASC
-            """,
-            (invoice_id,),
-        )
+                next_retry_at.isoformat() if next_retry_at else None,
+            )
 
-        rows = cur.fetchall()
-
-        return [
-            {
-                "id": r[0],
-                "invoice_id": r[1],
-                "attempt_no": r[2],
-                "status": r[3],
-                "failure_reason": r[4],
-                "next_retry_at": r[5],
-                "created_at": r[6],
-            }
-            for r in rows
-        ]
+    def list_for_invoice(self, invoice_id: int) -> list[dict]:
+        with self.db.connect() as conn:
+            rows = q.select_attempts_for_invoice(conn, invoice_id)
+        return [dict(row) for row in rows]
 
     def count_for_invoice(self, invoice_id: int) -> int:
-        cur = self.db.conn.execute(
-            """
-            SELECT COUNT(*)
-            FROM payment_attempts
-            WHERE invoice_id = ?
-            """,
-            (invoice_id,),
-        )
-        return int(cur.fetchone()[0])
+        with self.db.connect() as conn:
+            return q.count_attempts_for_invoice(conn, invoice_id)
