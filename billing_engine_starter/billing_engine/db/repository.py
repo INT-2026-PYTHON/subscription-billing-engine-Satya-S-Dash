@@ -53,77 +53,6 @@ from billing_engine.models import (
 )
 
 
-def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
-    return datetime.fromisoformat(value) if value else None
-
-
-def _parse_date(value: Optional[str]) -> Optional[date]:
-    return date.fromisoformat(value) if value else None
-
-
-def _customer_from_row(row) -> Customer:
-    return Customer(
-        id=row["id"],
-        name=row["name"],
-        email=row["email"],
-        country_code=row["country_code"],
-        state_code=row["state_code"],
-        created_at=_parse_datetime(row["created_at"]),
-    )
-
-
-def _plan_from_row(row) -> Plan:
-    return Plan(
-        id=row["id"],
-        name=row["name"],
-        pricing_type=PricingType(row["pricing_type"]),
-        billing_period=BillingPeriod(row["billing_period"]),
-        currency=row["currency"],
-        config_json=row["config_json"],
-    )
-
-
-def _subscription_from_row(row) -> Subscription:
-    return Subscription(
-        id=row["id"],
-        customer_id=row["customer_id"],
-        plan_id=row["plan_id"],
-        status=SubscriptionStatus(row["status"]),
-        current_period_start=date.fromisoformat(row["current_period_start"]),
-        current_period_end=date.fromisoformat(row["current_period_end"]),
-        trial_end=_parse_date(row["trial_end"]),
-        discount_id=row["discount_id"],
-        past_due_since=_parse_date(row["past_due_since"]),
-    )
-
-
-def _invoice_from_row(row) -> Invoice:
-    currency = row["currency"]
-    return Invoice(
-        id=row["id"],
-        subscription_id=row["subscription_id"],
-        period_start=date.fromisoformat(row["period_start"]),
-        period_end=date.fromisoformat(row["period_end"]),
-        subtotal=Money(row["subtotal"], currency),
-        discount_total=Money(row["discount_total"], currency),
-        tax_total=Money(row["tax_total"], currency),
-        total=Money(row["total"], currency),
-        status=InvoiceStatus(row["status"]),
-        issued_at=_parse_datetime(row["issued_at"]),
-        pdf_path=row["pdf_path"],
-    )
-
-
-def _line_item_from_row(row, currency: str) -> InvoiceLineItem:
-    return InvoiceLineItem(
-        id=row["id"],
-        invoice_id=row["invoice_id"],
-        description=row["description"],
-        amount=Money(row["amount"], currency),
-        kind=LineItemKind(row["kind"]),
-    )
-
-
 # ============================================================
 # CUSTOMERS
 # ============================================================
@@ -140,38 +69,74 @@ class CustomerRepository:
     def __init__(self, db: Database) -> None:
         self.db = db
 
-    def add(self, customer: Customer) -> Customer:
+    def add(self, customer : Customer) -> Customer:
+        
         with self.db.transaction() as conn:
-            new_id = q.insert_customer(
-                conn,
-                customer.name,
-                customer.email,
-                customer.country_code,
-                customer.state_code,
-            )
-        return Customer(
-            id=new_id,
-            name=customer.name,
-            email=customer.email,
-            country_code=customer.country_code,
-            state_code=customer.state_code,
-            created_at=customer.created_at,
+            customer_id = q.insert_customer(
+            conn,
+            customer.name,
+            customer.email,
+            customer.country_code,
+            customer.state_code,
         )
 
+        return Customer(
+        id=customer_id,
+        name=customer.name,
+        email=customer.email,
+        country_code=customer.country_code,
+        state_code=customer.state_code,
+    )
+
     def get(self, customer_id: int) -> Optional[Customer]:
+        
         with self.db.connect() as conn:
             row = q.select_customer_by_id(conn, customer_id)
-        return _customer_from_row(row) if row else None
+
+        if row is None:
+            return None
+
+        return Customer(
+            id=row["id"],
+            name=row["name"],
+            email=row["email"],
+            country_code=row["country_code"],
+            state_code=row["state_code"],
+        )
 
     def find_by_email(self, email: str) -> Optional[Customer]:
+        
         with self.db.connect() as conn:
-            row = q.select_customer_by_email(conn, email)
-        return _customer_from_row(row) if row else None
+             row = q.select_customer_by_email(conn, email)
+
+        if row is None:
+            return None
+
+        return Customer(
+            id=row["id"],
+            name=row["name"],
+            email=row["email"],
+            country_code=row["country_code"],
+            state_code=row["state_code"],
+        )
 
     def list_all(self) -> list[Customer]:
         with self.db.connect() as conn:
             rows = q.select_all_customers(conn)
-        return [_customer_from_row(row) for row in rows]
+
+        customers = []
+
+        for row in rows :
+            customer = Customer(
+                id=row["id"],
+                name=row["name"],
+                email=row["email"],
+                country_code=row["country_code"],
+                state_code=row["state_code"],
+            )
+            customers.append(customer)
+     
+        return customers
 
 
 # ============================================================
@@ -191,32 +156,58 @@ class PlanRepository:
 
     def add(self, plan: Plan) -> Plan:
         with self.db.transaction() as conn:
-            new_id = q.insert_plan(
-                conn,
-                plan.name,
-                plan.pricing_type.value,
-                plan.billing_period.value,
-                plan.currency,
-                plan.config_json,
-            )
-        return Plan(
-            id=new_id,
-            name=plan.name,
-            pricing_type=plan.pricing_type,
-            billing_period=plan.billing_period,
-            currency=plan.currency,
-            config_json=plan.config_json,
+            plan_id = q.insert_plan(
+            conn,
+            plan.name,
+            plan.pricing_type.value,
+            plan.billing_period.value,
+            plan.currency,
+            plan.config_json,
         )
+
+        return Plan(
+        id=plan_id,
+        name=plan.name,
+        pricing_type=plan.pricing_type,
+        billing_period=plan.billing_period,
+        currency=plan.currency,
+        config_json=plan.config_json,
+    )
 
     def get(self, plan_id: int) -> Optional[Plan]:
         with self.db.connect() as conn:
             row = q.select_plan_by_id(conn, plan_id)
-        return _plan_from_row(row) if row else None
+
+        if row is None:
+            return None
+
+        return Plan(
+        id=row["id"],
+        name=row["name"],
+        pricing_type=PricingType(row["pricing_type"]),
+        billing_period=BillingPeriod(row["billing_period"]),
+        currency=row["currency"],
+        config_json=row["config_json"],
+    )
 
     def list_all(self) -> list[Plan]:
         with self.db.connect() as conn:
             rows = q.select_all_plans(conn)
-        return [_plan_from_row(row) for row in rows]
+
+        plans = []
+
+        for row in rows:
+            plan = Plan(
+            id=row["id"],
+            name=row["name"],
+            pricing_type=PricingType(row["pricing_type"]),
+            billing_period=BillingPeriod(row["billing_period"]),
+                currency=row["currency"],
+                config_json=row["config_json"],
+        )
+            plans.append(plan)
+
+        return plans
 
 
 class PlanTierRepository:
@@ -230,17 +221,47 @@ class PlanTierRepository:
     def __init__(self, db: Database) -> None:
         self.db = db
 
-    def add(self, plan_id: int, from_units: int, to_units: Optional[int], unit_price: Money) -> int:
+    def add(
+    self,
+    plan_id: int,
+    from_units: int,
+    to_units: Optional[int],
+    unit_price: Money,
+) -> int:
         with self.db.transaction() as conn:
-            return q.insert_plan_tier(conn, plan_id, from_units, to_units, unit_price.to_storage())
+            tier_id = q.insert_plan_tier(
+                conn,
+                plan_id,
+                from_units,
+                to_units,
+                unit_price.to_storage(),
+            )
 
-    def list_for_plan(self, plan_id: int, currency: str) -> list[tuple[int, Optional[int], Money]]:
+        return tier_id
+
+    def list_for_plan(
+    self,
+    plan_id: int,
+    currency: str,
+) -> list[tuple[int, Optional[int], Money]]:
         with self.db.connect() as conn:
             rows = q.select_plan_tiers(conn, plan_id)
-        return [
-            (row["from_units"], row["to_units"], Money(row["unit_price"], currency))
-            for row in rows
-        ]
+
+        tiers = []
+
+        for row in rows:
+           tiers.append(
+            (
+                row["from_units"],
+                row["to_units"],
+                Money(
+                    row["unit_price"],
+                    currency,
+                ),
+            )
+        )
+
+        return tiers
 
 
 # ============================================================
@@ -260,12 +281,24 @@ class DiscountRepository:
 
     def add(self, code: str, discount_type: str, value: str, currency: Optional[str] = None) -> int:
         with self.db.transaction() as conn:
-            return q.insert_discount(conn, code, discount_type, value, currency)
+            discount_id = q.insert_discount(
+                conn,
+                code,
+                discount_type,
+                value,
+                currency,
+        )
+
+        return discount_id
 
     def get_by_code(self, code: str) -> Optional[dict]:
         with self.db.connect() as conn:
             row = q.select_discount_by_code(conn, code)
-        return dict(row) if row else None
+
+        if row is None:
+            return None
+
+        return dict(row)
 
 
 # ============================================================
@@ -282,22 +315,55 @@ class SubscriptionRepository:
 
     def __init__(self, db: Database) -> None:
         self.db = db
+        
+    def _row_to_subscription(self, row) -> Subscription:
+        return Subscription(
+            id=row["id"],
+            customer_id=row["customer_id"],
+            plan_id=row["plan_id"],
+            status=SubscriptionStatus(row["status"]),
+        
+            current_period_start=date.fromisoformat(
+                row["current_period_start"]
+            ),
+        
+            current_period_end=date.fromisoformat(
+                row["current_period_end"]
+            ),
+        
+            trial_end=date.fromisoformat(
+                row["trial_end"]
+            ) if row["trial_end"] 
+              else None,
+          
+            discount_id=row["discount_id"],
+        
+            past_due_since=date.fromisoformat(
+                row["past_due_since"]
+            ) if row["past_due_since"] 
+              else None,
+        )
 
     def add(self, subscription: Subscription) -> Subscription:
         with self.db.transaction() as conn:
-            new_id = q.insert_subscription(
+            subscription_id = q.insert_subscription(
                 conn,
                 subscription.customer_id,
                 subscription.plan_id,
                 subscription.status.value,
                 subscription.current_period_start.isoformat(),
                 subscription.current_period_end.isoformat(),
-                subscription.trial_end.isoformat() if subscription.trial_end else None,
+                subscription.trial_end.isoformat()
+                    if subscription.trial_end
+                    else None,
                 subscription.discount_id,
-                subscription.past_due_since.isoformat() if subscription.past_due_since else None,
+                subscription.past_due_since.isoformat()
+                    if subscription.past_due_since
+                    else None,
             )
+
         return Subscription(
-            id=new_id,
+            id=subscription_id,
             customer_id=subscription.customer_id,
             plan_id=subscription.plan_id,
             status=subscription.status,
@@ -310,18 +376,35 @@ class SubscriptionRepository:
 
     def get(self, subscription_id: int) -> Optional[Subscription]:
         with self.db.connect() as conn:
-            row = q.select_subscription_by_id(conn, subscription_id)
-        return _subscription_from_row(row) if row else None
+            row = q.select_subscription_by_id(
+                conn,
+                subscription_id,
+            )
+        
+        if row is None:
+            return None
+        return self._row_to_subscription(row)
 
     def list_all(self) -> list[Subscription]:
         with self.db.connect() as conn:
             rows = q.select_all_subscriptions(conn)
-        return [_subscription_from_row(row) for row in rows]
+         
+        return [
+            self._row_to_subscription(row)
+            for row in rows
+        ]
 
     def get_due_for_billing(self, as_of: date) -> list[Subscription]:
         with self.db.connect() as conn:
-            rows = q.select_due_subscriptions(conn, as_of.isoformat())
-        return [_subscription_from_row(row) for row in rows]
+            rows = q.select_due_subscriptions(
+                conn,
+                as_of.isoformat(),
+            )
+
+        return [
+               self._row_to_subscription(row)
+               for row in rows
+            ]
 
     # ------------------------------------------------------------------
     # Day 2 boundary:
@@ -330,12 +413,18 @@ class SubscriptionRepository:
     # ------------------------------------------------------------------
     def update_period(self, subscription_id: int, new_start: date, new_end: date) -> None:
         with self.db.transaction() as conn:
-            q.update_subscription_period(
-                conn,
-                subscription_id,
+            conn.execute(
+            """
+            UPDATE subscriptions
+            SET current_period_start = ?, current_period_end = ?
+            WHERE id = ?
+            """,
+            (
                 new_start.isoformat(),
                 new_end.isoformat(),
-            )
+                subscription_id,
+            ),
+        )
 
     def update_status(
         self,
@@ -344,21 +433,27 @@ class SubscriptionRepository:
         past_due_since: Optional[date] = None,
     ) -> None:
         with self.db.transaction() as conn:
-            q.update_subscription_status(
-                conn,
-                subscription_id,
+            conn.execute(
+            """
+            UPDATE subscriptions
+            SET status = ?, past_due_since = ?
+            WHERE id = ?
+            """,
+            (
                 new_status.value,
                 past_due_since.isoformat() if past_due_since else None,
-            )
+                subscription_id,
+            ),
+        )
 
     def update_plan(self, subscription_id: int, new_plan_id: int) -> None:
-        
         with self.db.transaction() as conn:
             q.update_subscription_plan(
-                conn,
-                subscription_id,
-                new_plan_id,
+                conn, 
+                subscription_id, 
+                new_plan_id
             )
+
 
 # ============================================================
 # USAGE
@@ -377,13 +472,24 @@ class UsageRecordRepository:
 
     def add(self, subscription_id: int, metric: str, quantity: int) -> int:
         with self.db.transaction() as conn:
-            return q.insert_usage_record(conn, subscription_id, metric, quantity)
+            record_id = q.insert_usage_record(
+                conn,
+                subscription_id,
+                metric,
+                quantity,
+            )
+
+        return record_id
 
     def sum_for_period(
         self, subscription_id: int, metric: str, period_start: date, period_end: date
     ) -> int:
         with self.db.connect() as conn:
-            return q.sum_usage_for_subscription_metric(conn, subscription_id, metric)
+            return q.sum_usage_for_subscription_metric(
+                conn,
+                subscription_id,
+                metric,
+            )
 
 
 # ============================================================
@@ -403,7 +509,7 @@ class InvoiceRepository:
 
     def add(self, invoice: Invoice) -> Invoice:
         with self.db.transaction() as conn:
-            new_id = q.insert_invoice(
+            invoice_id = q.insert_invoice(
                 conn,
                 invoice.subscription_id,
                 invoice.period_start.isoformat(),
@@ -416,9 +522,10 @@ class InvoiceRepository:
                 invoice.status.value,
                 invoice.issued_at.isoformat() if invoice.issued_at else None,
                 invoice.pdf_path,
-            )
+        )
+
         return Invoice(
-            id=new_id,
+            id=invoice_id,
             subscription_id=invoice.subscription_id,
             period_start=invoice.period_start,
             period_end=invoice.period_end,
@@ -429,50 +536,78 @@ class InvoiceRepository:
             status=invoice.status,
             issued_at=invoice.issued_at,
             pdf_path=invoice.pdf_path,
-            line_items=invoice.line_items,
         )
 
     def get(self, invoice_id: int) -> Optional[Invoice]:
         with self.db.connect() as conn:
             row = q.select_invoice_by_id(conn, invoice_id)
-        return _invoice_from_row(row) if row else None
+            
+        if row is None:
+            return None
+        
+        currency = row["currency"]
+        return Invoice(
+    id=row["id"],
+    subscription_id=row["subscription_id"],
+    period_start=date.fromisoformat(row["period_start"]),
+    period_end=date.fromisoformat(row["period_end"]),
+    
+    subtotal=Money(
+        row["subtotal"],
+        currency,
+    ),
+    
+    discount_total=Money(
+        row["discount_total"],
+        currency,
+    ),
+    
+    tax_total=Money(
+        row["tax_total"],
+        currency,
+    ),
+    
+    total=Money(
+        row["total"],
+        currency,
+    ),
+    
+    status=InvoiceStatus(row["status"]),
+    
+    issued_at=(
+        date.fromisoformat(row["issued_at"])
+        if row["issued_at"]
+        else None
+    ),
+    
+    pdf_path=row["pdf_path"],
+)
 
     def count_for_subscription(self, subscription_id: int) -> int:
         with self.db.connect() as conn:
-            return q.count_invoices_for_subscription(conn, subscription_id)
+           row = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM invoices
+            WHERE subscription_id = ?
+            """,
+            (subscription_id,),
+        ).fetchone()
+
+        return int(row["count"])
 
     def mark_paid(self, invoice_id: int) -> None:
-        with self.db.transaction() as conn:
-            conn.execute(
-                """
-                UPDATE invoices
-                SET status = ?
-                WHERE id = ?
-                """,
-                (
-                    InvoiceStatus.PAID.value,
-                    invoice_id,
-                ),
-            )
+       with self.db.transaction() as conn:
+            q.update_invoice_status(conn, invoice_id, "PAID")
 
     def mark_failed(self, invoice_id: int) -> None:
+        """Mark invoice as FAILED (used when dunning gives up)."""
         with self.db.transaction() as conn:
-            conn.execute(
-                """
-                UPDATE invoices
-                SET status = ?
-                WHERE id = ?
-                """,
-                (
-                    InvoiceStatus.FAILED.value,
-                    invoice_id,
-                ),
-            )
+            q.update_invoice_status(conn, invoice_id, "FAILED")
 
     def set_pdf_path(self, invoice_id: int, path: str) -> None:
-        # TODO Day 4.
-        # Hint: q.update_invoice_pdf_path(...)
-        raise NotImplementedError("Day 4: implement InvoiceRepository.set_pdf_path")
+        with self.db.transaction() as conn:
+            q.update_invoice_pdf_path(conn, invoice_id, path)
 
 
 class InvoiceLineItemRepository:
@@ -487,31 +622,59 @@ class InvoiceLineItemRepository:
         self.db = db
 
     def add(self, line_item: InvoiceLineItem) -> InvoiceLineItem:
-        if line_item.invoice_id is None:
-            raise ValueError("line_item.invoice_id is required")
         with self.db.transaction() as conn:
-            new_id = q.insert_invoice_line_item(
+            line_item_id = q.insert_invoice_line_item(
                 conn,
                 line_item.invoice_id,
                 line_item.description,
                 line_item.amount.to_storage(),
                 line_item.kind.value,
-            )
+        )
+
         return InvoiceLineItem(
-            id=new_id,
+            id=line_item_id,
             invoice_id=line_item.invoice_id,
             description=line_item.description,
             amount=line_item.amount,
             kind=line_item.kind,
         )
 
-    def list_for_invoice(self, invoice_id: int) -> list[InvoiceLineItem]:
-        with self.db.connect() as conn:
-            invoice = q.select_invoice_by_id(conn, invoice_id)
-            if invoice is None:
-                return []
-            rows = q.select_line_items_for_invoice(conn, invoice_id)
-        return [_line_item_from_row(row, invoice["currency"]) for row in rows]
+    def list_for_invoice(
+    self,
+    invoice_id: int,
+) -> list[InvoiceLineItem]:
+     invoice = InvoiceRepository(self.db).get(invoice_id)
+
+     if invoice is None:
+        return []
+
+     currency = invoice.total.currency
+
+     with self.db.connect() as conn:
+        rows = q.select_line_items_for_invoice(
+            conn,
+            invoice_id,
+        )
+
+     line_items = []
+
+     for row in rows:
+        line_items.append(
+            InvoiceLineItem(
+                id=row["id"],
+                invoice_id=row["invoice_id"],
+                description=row["description"],
+                amount=Money(
+                    row["amount"],
+                    currency,
+                ),
+                kind=LineItemKind(
+                    row["kind"]
+                ),
+            )
+        )
+
+     return line_items
 
 
 # ============================================================
@@ -534,40 +697,67 @@ class LedgerRepository:
 
     def add(self, entry: LedgerEntry) -> LedgerEntry:
         with self.db.transaction() as conn:
-            new_id = q.insert_ledger_entry(
-                conn,
-                entry.invoice_id,
+            cur = conn.execute(
+            """
+            INSERT INTO ledger_entries
+            (
+                customer_id,
+                invoice_id,
+                direction,
+                amount,
+                currency,
+                reason
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
                 entry.customer_id,
+                entry.invoice_id,
+                entry.direction.value,
                 entry.amount.to_storage(),
                 entry.amount.currency,
-                entry.direction.value,
                 entry.reason,
-            )
-        return LedgerEntry(
-            id=new_id,
-            invoice_id=entry.invoice_id,
-            customer_id=entry.customer_id,
-            amount=entry.amount,
-            direction=entry.direction,
-            reason=entry.reason,
-            created_at=entry.created_at,
+            ),
         )
+
+        new_id = int(cur.lastrowid)
+
+        return LedgerEntry(
+        id=new_id,
+        customer_id=entry.customer_id,
+        invoice_id=entry.invoice_id,
+        direction=entry.direction,
+        amount=entry.amount,
+        reason=entry.reason,
+    )
 
     def list_for_customer(self, customer_id: int) -> list[LedgerEntry]:
         with self.db.connect() as conn:
-            rows = q.select_ledger_for_customer(conn, customer_id)
-        return [
-            LedgerEntry(
+            rows = conn.execute(
+            """
+            SELECT *
+            FROM ledger_entries
+            WHERE customer_id = ?
+            ORDER BY created_at, id
+            """,
+            (customer_id,),
+        ).fetchall()
+
+        result = []
+
+        for row in rows:
+            result.append(
+                LedgerEntry(
                 id=row["id"],
-                invoice_id=row["invoice_id"],
                 customer_id=row["customer_id"],
-                amount=Money(row["amount"], row["currency"]),
+                invoice_id=row["invoice_id"],
                 direction=LedgerDirection(row["direction"]),
+                amount=Money(row["amount"], row["currency"]),
                 reason=row["reason"],
-                created_at=_parse_datetime(row["created_at"]),
             )
-            for row in rows
-        ]
+        )
+
+        return result
 
     # These two methods are intentionally implemented to REJECT — do not override.
     def update(self, *args, **kwargs):
@@ -616,4 +806,6 @@ class PaymentAttemptRepository:
 
     def count_for_invoice(self, invoice_id: int) -> int:
         with self.db.connect() as conn:
-            return q.count_attempts_for_invoice(conn, invoice_id)
+            # The query helper already returns the integer count directly
+            count = q.count_attempts_for_invoice(conn, invoice_id)
+            return int(count) if count is not None else 0
