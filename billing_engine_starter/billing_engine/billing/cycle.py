@@ -27,7 +27,15 @@ from billing_engine.models import (
     Subscription,
     SubscriptionStatus,
 )
-
+from billing_engine.billing.proration import compute_proration
+from billing_engine.models import (
+    Invoice,
+    InvoiceLineItem,
+    InvoiceStatus,
+    LineItemKind,
+    LedgerEntry,
+    LedgerDirection,
+)
 
 @dataclass
 class BillingResult:
@@ -189,7 +197,84 @@ class BillingCycle:
         )
 
     # --------------------------------------------------------
-    def upgrade_subscription(self, subscription_id: int, new_plan_id: int, switch_date: date) -> None:
-        """Mid-cycle upgrade — Day 4 stretch."""
-        # TODO Day 4
-        raise NotImplementedError("Day 4: implement BillingCycle.upgrade_subscription")
+    def upgrade_subscription(self,subscription_id: int,new_plan_id: int,switch_date: date,) -> None:
+
+        subscription = self.subscription_repo.get(subscription_id)
+        if subscription is None:
+            raise ValueError("Subscription not found")
+
+        old_plan = self.plan_repo.get(subscription.plan_id)
+        new_plan = self.plan_repo.get(new_plan_id)
+        customer = self.customer_repo.get(subscription.customer_id)
+
+        if old_plan is None or new_plan is None or customer is None:
+            raise ValueError("Missing data")
+
+        old_strategy = self.strategy_factory(old_plan)
+        new_strategy = self.strategy_factory(new_plan)
+
+        old_price = old_strategy.calculate(0)
+        new_price = new_strategy.calculate(0)
+
+        tax_calc, tax_context = self.tax_factory(customer)
+
+        pr = compute_proration(
+            old_plan_price=old_price,
+            new_plan_price=new_price,
+            period_start=subscription.current_period_start,
+            period_end=subscription.current_period_end,
+            switch_date=switch_date,
+            tax_calc=tax_calc,
+            tax_context=tax_context,
+        )
+
+        invoice = self.invoice_repo.add(
+            Invoice(
+                id=None,
+                subscription_id=subscription.id,
+                period_start=switch_date,
+                period_end=subscription.current_period_end,
+                subtotal=pr.charge_amount - pr.credit_amount,
+                discount_total=pr.credit_amount,
+                tax_total=pr.charge_tax - pr.credit_tax,
+                total=(pr.charge_amount + pr.charge_tax)
+                      - (pr.credit_amount + pr.credit_tax),
+                status=InvoiceStatus.ISSUED,
+            )
+        )
+
+        self.line_item_repo.add(
+            InvoiceLineItem(
+                id=None,
+                invoice_id=invoice.id,
+                description="Proration credit",
+                amount=-pr.credit_amount,
+                kind=LineItemKind.PRORATION_CREDIT,
+            )
+        )
+
+        self.line_item_repo.add(
+            InvoiceLineItem(
+                id=None,
+                invoice_id=invoice.id,
+                description="Proration charge",
+                amount=pr.charge_amount,
+                kind=LineItemKind.PRORATION_CHARGE,
+            )
+        )
+
+        self.ledger_repo.add(
+            LedgerEntry(
+                id=None,
+                invoice_id=invoice.id,
+                customer_id=subscription.customer_id,
+                amount=invoice.total,
+                direction=LedgerDirection.DEBIT,
+                reason="Proration upgrade",
+            )
+        )
+
+        self.subscription_repo.update_plan(
+            subscription.id,
+            new_plan_id,
+        )
