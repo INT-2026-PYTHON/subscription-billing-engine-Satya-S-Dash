@@ -301,7 +301,7 @@ class TestInvoiceLineItemRepository:
         assert len(items) == 2
         assert items[0].kind == LineItemKind.BASE
 
-'''
+
 # ============================================================
 # LedgerRepository — APPEND-ONLY
 # ============================================================
@@ -333,4 +333,3 @@ class TestLedgerRepositoryAppendOnly:
                              LedgerDirection.CREDIT, "Payment"))
         entries = repo.list_for_customer(c.id)
         assert len(entries) == 2
-'''
