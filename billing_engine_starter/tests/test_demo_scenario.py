@@ -27,8 +27,6 @@ from billing_engine_starter.tests.conftest import (
     make_flat_strategy_factory, make_discount_factory, make_no_tax_factory,
 )
 
-
-@pytest.mark.skip(reason="Day-3 evening acceptance gate — remove this skip when ready.")
 class TestEndToEndScenario:
     def test_full_lifecycle(self, repos):
         # 1. Seed a customer + plan + active subscription
